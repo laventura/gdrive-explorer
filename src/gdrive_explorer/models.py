@@ -203,10 +203,31 @@ class DriveItem(BaseModel):
             except (ValueError, TypeError):
                 size = 0
         
+        # Determine item type from MIME type
+        mime_type = api_data.get('mimeType', '')
+        
+        if mime_type == 'application/vnd.google-apps.folder':
+            item_type = ItemType.FOLDER
+        elif mime_type == 'application/vnd.google-apps.document':
+            item_type = ItemType.GOOGLE_DOC
+        elif mime_type == 'application/vnd.google-apps.spreadsheet':
+            item_type = ItemType.GOOGLE_SHEET
+        elif mime_type == 'application/vnd.google-apps.presentation':
+            item_type = ItemType.GOOGLE_SLIDE
+        elif mime_type == 'application/vnd.google-apps.form':
+            item_type = ItemType.GOOGLE_FORM
+        elif mime_type == 'application/vnd.google-apps.drawing':
+            item_type = ItemType.GOOGLE_DRAWING
+        elif 'google-apps' in mime_type:
+            item_type = ItemType.UNKNOWN
+        else:
+            item_type = ItemType.FILE
+
         return cls(
             id=api_data['id'],
             name=api_data.get('name', 'Unknown'),
-            mime_type=api_data.get('mimeType', ''),
+            type=item_type,
+            mime_type=mime_type,
             size=size,
             parent_ids=api_data.get('parents', []),
             created_time=created_time,
