@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebSearch",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

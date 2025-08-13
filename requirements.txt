@@ -1,0 +1,19 @@
+# Google Drive API
+google-api-python-client==2.144.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.1.0
+
+# CLI and UI
+click==8.1.7
+rich==13.7.1
+
+# Data handling
+pydantic==2.8.2
+pandas==2.2.2
+pyyaml==6.0.1
+
+# Development dependencies
+pytest==8.3.2
+black==24.8.0
+mypy==1.11.1
+pre-commit==3.8.0

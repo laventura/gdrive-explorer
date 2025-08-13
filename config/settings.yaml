@@ -1,0 +1,61 @@
+# Google Drive Explorer Configuration
+
+# Google Drive API settings
+api:
+  # Delay between API requests (seconds) to avoid rate limits
+  request_delay: 0.1
+  # Maximum number of retries for failed requests
+  max_retries: 3
+  # Request timeout in seconds
+  timeout: 30
+  # Page size for listing files (max 1000)
+  page_size: 1000
+
+# Authentication settings
+auth:
+  # Path to OAuth credentials file (relative to project root)
+  credentials_file: "config/credentials.json"
+  # Path to store authentication tokens (relative to project root)
+  token_file: "config/token.pickle"
+
+# Caching settings
+cache:
+  # Enable local caching for better performance
+  enabled: true
+  # Cache time-to-live in hours
+  ttl_hours: 24
+  # Maximum cache database size in MB
+  max_size_mb: 100
+  # Path to cache database (relative to project root)
+  database_path: "data/cache.db"
+
+# Display settings
+display:
+  # Default output format: "table", "tree", "json"
+  default_format: "table"
+  # Maximum number of items to display (0 = no limit)
+  max_items: 1000
+  # Show progress bars during operations
+  show_progress: true
+  # Use colors in CLI output
+  use_colors: true
+  # Human-readable file sizes (KB, MB, GB instead of bytes)
+  human_readable_sizes: true
+
+# Export settings
+export:
+  # Default export format: "csv", "json"
+  default_format: "csv"
+  # Include file metadata in exports
+  include_metadata: true
+  # Date format for timestamps
+  date_format: "%Y-%m-%d %H:%M:%S"
+
+# Logging settings
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+  # Log file path (relative to project root)
+  file: "gdrive-explorer.log"
+  # Maximum log file size in MB
+  max_size_mb: 10
