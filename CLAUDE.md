@@ -24,11 +24,11 @@ Google Drive Explorer - A Python CLI application that explores Google Drive, cal
 ## Development Phases
 
 Implementation follows 5 phases as outlined in IMPLEMENTATION_PLAN.md:
-1. Core Foundation (OAuth + basic API)
-2. Data Models & Traversal 
-3. Size Calculation Engine
-4. CLI Visualization & Sorting
-5. Export & Advanced Features
+1. ✅ Core Foundation (OAuth + basic API)
+2. ✅ Data Models & Traversal 
+3. 🚧 Size Calculation Engine
+4. ✅ CLI Visualization & Sorting
+5. 🚧 Export & Advanced Features
 
 ## Common Commands
 
@@ -41,8 +41,16 @@ uv run python main.py clear-auth              # Clear stored credentials
 uv run python main.py info                    # Show configuration
 uv run python main.py test                    # Test connection and list files
 
-# Phase 2 features
-uv run python main.py scan                    # Scan and analyze Drive (preview)
+# Analysis & Visualization (Phase 4)
+uv run python main.py scan                    # Rich scan with tables/tree/compact views
+uv run python main.py scan --format tree      # Tree view of folder structure
+uv run python main.py scan --min-size 10MB    # Filter by minimum size
+uv run python main.py largest                 # Show largest files and folders
+uv run python main.py summary                 # Drive statistics and summary
+uv run python main.py tree --depth 4         # Folder tree with custom depth
+uv run python main.py search -p "photo"      # Search files and folders
+
+# Caching
 uv run python main.py cache                   # Show cache statistics
 uv run python main.py cache-clear             # Clear cache data
 
