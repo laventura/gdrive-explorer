@@ -98,20 +98,31 @@ class DriveCache:
             # Migration from version 1 to 2: Add columns to drive_structures table
             logger.info("Adding new columns to drive_structures table")
             try:
-                # Check if columns exist before adding them
-                cursor = conn.execute("PRAGMA table_info(drive_structures)")
-                columns = [row[1] for row in cursor.fetchall()]
+                # Check if table exists first
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='drive_structures'"
+                )
+                table_exists = cursor.fetchone() is not None
                 
-                if 'scan_complete' not in columns:
-                    conn.execute('ALTER TABLE drive_structures ADD COLUMN scan_complete BOOLEAN DEFAULT 0')
-                if 'total_files' not in columns:
-                    conn.execute('ALTER TABLE drive_structures ADD COLUMN total_files INTEGER DEFAULT 0')
-                if 'total_folders' not in columns:
-                    conn.execute('ALTER TABLE drive_structures ADD COLUMN total_folders INTEGER DEFAULT 0')
-                if 'scan_errors' not in columns:
-                    conn.execute('ALTER TABLE drive_structures ADD COLUMN scan_errors INTEGER DEFAULT 0')
+                if table_exists:
+                    # Check if columns exist before adding them
+                    cursor = conn.execute("PRAGMA table_info(drive_structures)")
+                    columns = [row[1] for row in cursor.fetchall()]
                     
-                logger.info("Database migration to version 2 completed successfully")
+                    if 'scan_complete' not in columns:
+                        conn.execute('ALTER TABLE drive_structures ADD COLUMN scan_complete BOOLEAN DEFAULT 0')
+                    if 'total_files' not in columns:
+                        conn.execute('ALTER TABLE drive_structures ADD COLUMN total_files INTEGER DEFAULT 0')
+                    if 'total_folders' not in columns:
+                        conn.execute('ALTER TABLE drive_structures ADD COLUMN total_folders INTEGER DEFAULT 0')
+                    if 'scan_errors' not in columns:
+                        conn.execute('ALTER TABLE drive_structures ADD COLUMN scan_errors INTEGER DEFAULT 0')
+                    
+                    logger.info("Database migration to version 2 completed successfully")
+                else:
+                    # Table doesn't exist yet, migration will be handled by _create_tables
+                    logger.info("drive_structures table doesn't exist yet, will be created with new schema")
+                    
             except sqlite3.Error as e:
                 logger.error(f"Error during database migration: {e}")
                 raise
