@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 class DriveCache:
     """SQLite-based cache for Google Drive data."""
     
+    # Database schema version for migrations
+    SCHEMA_VERSION = 2
+    
     def __init__(self, cache_path: Optional[str] = None):
         """Initialize the cache.
         
@@ -46,29 +49,7 @@ class DriveCache:
         ensure_directory_exists(self.cache_path.parent)
         
         with self._get_connection() as conn:
-            # Create tables
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS drive_items (
-                    id TEXT PRIMARY KEY,
-                    data BLOB NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    expires_at TIMESTAMP NOT NULL,
-                    size_bytes INTEGER DEFAULT 0
-                )
-            ''')
-            
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS drive_structures (
-                    id TEXT PRIMARY KEY,
-                    data BLOB NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    expires_at TIMESTAMP NOT NULL,
-                    size_bytes INTEGER DEFAULT 0
-                )
-            ''')
-            
+            # Create metadata table first to track schema version
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS cache_metadata (
                     key TEXT PRIMARY KEY,
@@ -77,13 +58,97 @@ class DriveCache:
                 )
             ''')
             
-            # Create indexes for performance
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_drive_items_expires ON drive_items(expires_at)')
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_structures_expires ON drive_structures(expires_at)')
+            # Check current schema version
+            current_version = self._get_schema_version(conn)
+            
+            if current_version < self.SCHEMA_VERSION:
+                logger.info(f"Migrating database schema from version {current_version} to {self.SCHEMA_VERSION}")
+                self._migrate_database(conn, current_version)
+            
+            # Create or update tables with current schema
+            self._create_tables(conn)
+            
+            # Update schema version
+            conn.execute('''
+                INSERT OR REPLACE INTO cache_metadata (key, value, updated_at)
+                VALUES ('schema_version', ?, CURRENT_TIMESTAMP)
+            ''', (str(self.SCHEMA_VERSION),))
             
             conn.commit()
             
         logger.debug(f"Cache database initialized: {self.cache_path}")
+    
+    def _get_schema_version(self, conn) -> int:
+        """Get the current schema version from metadata."""
+        try:
+            cursor = conn.execute(
+                'SELECT value FROM cache_metadata WHERE key = ?',
+                ('schema_version',)
+            )
+            row = cursor.fetchone()
+            if row:
+                return int(row['value'])
+        except (sqlite3.Error, ValueError):
+            pass
+        return 1  # Default to version 1 for existing databases
+    
+    def _migrate_database(self, conn, current_version: int) -> None:
+        """Migrate database schema to current version."""
+        if current_version < 2:
+            # Migration from version 1 to 2: Add columns to drive_structures table
+            logger.info("Adding new columns to drive_structures table")
+            try:
+                # Check if columns exist before adding them
+                cursor = conn.execute("PRAGMA table_info(drive_structures)")
+                columns = [row[1] for row in cursor.fetchall()]
+                
+                if 'scan_complete' not in columns:
+                    conn.execute('ALTER TABLE drive_structures ADD COLUMN scan_complete BOOLEAN DEFAULT 0')
+                if 'total_files' not in columns:
+                    conn.execute('ALTER TABLE drive_structures ADD COLUMN total_files INTEGER DEFAULT 0')
+                if 'total_folders' not in columns:
+                    conn.execute('ALTER TABLE drive_structures ADD COLUMN total_folders INTEGER DEFAULT 0')
+                if 'scan_errors' not in columns:
+                    conn.execute('ALTER TABLE drive_structures ADD COLUMN scan_errors INTEGER DEFAULT 0')
+                    
+                logger.info("Database migration to version 2 completed successfully")
+            except sqlite3.Error as e:
+                logger.error(f"Error during database migration: {e}")
+                raise
+    
+    def _create_tables(self, conn) -> None:
+        """Create all tables with current schema."""
+        # Create drive_items table
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS drive_items (
+                id TEXT PRIMARY KEY,
+                data BLOB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL,
+                size_bytes INTEGER DEFAULT 0
+            )
+        ''')
+        
+        # Create drive_structures table with all columns
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS drive_structures (
+                id TEXT PRIMARY KEY,
+                data BLOB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL,
+                size_bytes INTEGER DEFAULT 0,
+                scan_complete BOOLEAN DEFAULT 0,
+                total_files INTEGER DEFAULT 0,
+                total_folders INTEGER DEFAULT 0,
+                scan_errors INTEGER DEFAULT 0
+            )
+        ''')
+        
+        # Create indexes for performance
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_drive_items_expires ON drive_items(expires_at)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_structures_expires ON drive_structures(expires_at)')
     
     @contextmanager
     def _get_connection(self):
@@ -238,11 +303,17 @@ class DriveCache:
             expires_at = self._calculate_expiry()
             
             with self._get_connection() as conn:
+                # Get metadata from structure
+                scan_complete = structure.scan_complete if hasattr(structure, 'scan_complete') else False
+                total_files = structure.total_files if hasattr(structure, 'total_files') else 0
+                total_folders = structure.total_folders if hasattr(structure, 'total_folders') else 0
+                scan_errors = getattr(structure, '_processing_errors', 0)
+                
                 conn.execute('''
                     INSERT OR REPLACE INTO drive_structures 
-                    (id, data, updated_at, expires_at, size_bytes)
-                    VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?)
-                ''', (structure_id, data, expires_at.isoformat(), len(data)))
+                    (id, data, updated_at, expires_at, size_bytes, scan_complete, total_files, total_folders, scan_errors)
+                    VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+                ''', (structure_id, data, expires_at.isoformat(), len(data), scan_complete, total_files, total_folders, scan_errors))
                 
                 conn.commit()
                 
@@ -387,9 +458,21 @@ class DriveCache:
                 cursor = conn.execute('SELECT COUNT(*) as count FROM drive_items')
                 stats['items_count'] = cursor.fetchone()['count']
                 
-                # Count structures
-                cursor = conn.execute('SELECT COUNT(*) as count FROM drive_structures')
-                stats['structures_count'] = cursor.fetchone()['count']
+                # Count structures and get detailed info
+                cursor = conn.execute('''
+                    SELECT COUNT(*) as count,
+                           SUM(CASE WHEN scan_complete = 1 THEN 1 ELSE 0 END) as complete_scans,
+                           MAX(total_files) as max_files,
+                           MAX(total_folders) as max_folders,
+                           SUM(scan_errors) as total_errors
+                    FROM drive_structures
+                ''')
+                row = cursor.fetchone()
+                stats['structures_count'] = row['count']
+                stats['complete_scans'] = row['complete_scans'] or 0
+                stats['max_files_scanned'] = row['max_files'] or 0
+                stats['max_folders_scanned'] = row['max_folders'] or 0
+                stats['total_scan_errors'] = row['total_errors'] or 0
                 
                 # Total size
                 cursor = conn.execute('SELECT SUM(size_bytes) as total_size FROM drive_items')
