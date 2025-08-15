@@ -52,11 +52,30 @@ class DriveItem(BaseModel):
         use_enum_values = True
         arbitrary_types_allowed = True
     
+    def __eq__(self, other):
+        """Items are equal if they have the same ID."""
+        if not isinstance(other, DriveItem):
+            return False
+        return self.id == other.id
+    
+    def __hash__(self):
+        """Hash based on ID for use in sets and dicts."""
+        return hash(self.id)
+    
     @validator('type', pre=True)
     def determine_type(cls, v, values):
         """Determine item type from MIME type if not explicitly set."""
+        # If type is provided and valid, use it
         if isinstance(v, str) and v in ItemType.__members__.values():
             return v
+        
+        # If type is provided but invalid, raise an error
+        if isinstance(v, str) and v not in ItemType.__members__.values():
+            # Only try to infer from mime_type if no explicit type was provided
+            # For this, we'd need to check if 'type' was in the input data
+            # Since we can't easily check that in Pydantic v1, we'll be permissive
+            # and fall through to mime_type detection
+            pass
         
         mime_type = values.get('mime_type', '')
         
@@ -75,6 +94,9 @@ class DriveItem(BaseModel):
         elif 'google-apps' in mime_type:
             return ItemType.UNKNOWN
         else:
+            # If we have an invalid explicit type and no helpful mime_type, raise error
+            if isinstance(v, str) and v not in ItemType.__members__.values():
+                raise ValueError(f"Invalid item type: {v}")
             return ItemType.FILE
     
     @property

@@ -7,8 +7,10 @@ import logging
 
 from .client import DriveClient
 from .models import DriveItem, DriveStructure, ItemType
-from .utils import ProgressTracker
+from .utils import ProgressTracker, RichProgressManager
 from .config import get_config
+from .cache import get_cache
+from .calculator import DriveCalculator
 
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,8 @@ class DriveExplorer:
         """
         self.client = client or DriveClient()
         self.config = get_config()
+        self.cache = get_cache()
+        self.calculator = DriveCalculator(self.client)
         self._scanned_folders: Set[str] = set()
         self._total_items_found = 0
         
@@ -71,6 +75,256 @@ class DriveExplorer:
         except Exception as e:
             logger.error(f"Error during drive scan: {e}")
             raise
+    
+    def scan_drive_complete(self, 
+                           calculate_sizes: bool = True,
+                           use_cache: bool = True,
+                           progress_callback: Optional[Callable[[str, int, int], None]] = None) -> DriveStructure:
+        """Perform a complete scan of Google Drive with full size calculation.
+        
+        Args:
+            calculate_sizes: Whether to calculate folder sizes (Phase 3 feature)
+            use_cache: Whether to use cached results if available
+            progress_callback: Optional callback for progress updates (message, current, total)
+            
+        Returns:
+            Complete DriveStructure with all files, folders, and calculated sizes
+        """
+        logger.info("Starting complete Google Drive scan...")
+        start_time = time.time()
+        
+        try:
+            # Check cache first
+            if use_cache and self.config.cache.enabled:
+                cached_structure = self.cache.get_structure()
+                if cached_structure and cached_structure.scan_complete:
+                    logger.info("Using cached complete Drive structure")
+                    if progress_callback:
+                        progress_callback("✓ Using cached data", 1, 1)
+                    return cached_structure
+            
+            if progress_callback:
+                progress_callback("🔍 Fetching all files from Drive...", 0, 100)
+            
+            # Step 1: Get ALL files from Drive (not limited sample)
+            all_files = self._fetch_all_files_complete(progress_callback)
+            logger.info(f"Found {len(all_files)} total items in Drive")
+            
+            if progress_callback:
+                progress_callback("🔧 Building Drive structure...", 30, 100)
+            
+            # Step 2: Build complete structure
+            structure = DriveStructure()
+            self._build_complete_structure(all_files, structure, progress_callback)
+            
+            if progress_callback:
+                progress_callback("🌳 Building folder hierarchy...", 60, 100)
+            
+            # Step 3: Build hierarchy 
+            structure.build_hierarchy()
+            
+            if calculate_sizes:
+                if progress_callback:
+                    progress_callback("📊 Calculating folder sizes...", 70, 100)
+                
+                # Step 4: Calculate all folder sizes (Phase 3!)
+                def size_progress(message, current, total):
+                    # Convert to overall progress (70-95% range)
+                    if total > 0:
+                        size_percent = int(70 + (current / total) * 25)
+                        progress_callback(f"📊 {message}", size_percent, 100)
+                
+                structure = self.calculator.calculate_full_drive_sizes(
+                    structure, 
+                    progress_callback=size_progress
+                )
+            else:
+                # Just mark as complete without size calculation
+                structure.scan_complete = True
+                structure.scan_timestamp = datetime.now()
+            
+            if progress_callback:
+                progress_callback("💾 Caching results...", 95, 100)
+            
+            # Step 5: Cache complete structure
+            if self.config.cache.enabled:
+                self.cache.cache_structure(structure)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"Complete Drive scan finished in {elapsed:.2f} seconds")
+            logger.info(f"Total: {structure.total_files} files, {structure.total_folders} folders")
+            logger.info(f"Total size: {structure.total_size:,} bytes")
+            
+            if progress_callback:
+                progress_callback("✅ Complete scan finished!", 100, 100)
+            
+            return structure
+            
+        except Exception as e:
+            logger.error(f"Error during complete drive scan: {e}")
+            raise
+    
+    def _fetch_all_files_complete(self, progress_callback: Optional[Callable] = None) -> List[Dict]:
+        """Fetch ALL files from Google Drive (not limited sample).
+        
+        Args:
+            progress_callback: Optional progress callback
+            
+        Returns:
+            List of ALL file metadata dictionaries
+        """
+        all_files = []
+        page_token = None
+        page_count = 0
+        errors_encountered = 0
+        
+        # Query to exclude trashed files but get everything else
+        query = "trashed=false"
+        
+        logger.info("Fetching ALL files from Google Drive (complete scan)...")
+        
+        try:
+            # First, estimate total by getting first page
+            first_result = self.client.list_files(
+                page_size=self.config.api.page_size,
+                query=query
+            )
+            
+            estimated_total = None
+            if 'files' in first_result:
+                all_files.extend(first_result['files'])
+                page_count = 1
+                
+                # Rough estimation for progress (Google doesn't give us total count)
+                if len(first_result['files']) == self.config.api.page_size:
+                    # Likely more pages, estimate based on typical Drive sizes
+                    estimated_total = self.config.api.page_size * 10  # Conservative estimate
+                else:
+                    estimated_total = len(first_result['files'])
+            
+            page_token = first_result.get('nextPageToken')
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch initial page: {e}")
+            if "insufficient" in str(e).lower() or "permission" in str(e).lower():
+                raise PermissionError(f"Insufficient permissions to access Google Drive: {e}")
+            raise
+        
+        # Continue fetching all pages
+        while page_token:
+            try:
+                result = self.client.list_files(
+                    page_size=self.config.api.page_size,
+                    page_token=page_token,
+                    query=query
+                )
+                
+                files = result.get('files', [])
+                all_files.extend(files)
+                page_count += 1
+                
+                if progress_callback and estimated_total:
+                    # Update progress (this is fetching phase, 0-30%)
+                    current_progress = min(30, int((len(all_files) / estimated_total) * 30))
+                    progress_callback(f"Fetched {len(all_files)} files...", current_progress, 100)
+                
+                logger.debug(f"Fetched page {page_count}, total files: {len(all_files)}")
+                
+                page_token = result.get('nextPageToken')
+                
+                # Update estimate if we're getting more than expected
+                if estimated_total and len(all_files) > estimated_total * 0.8:
+                    estimated_total = int(len(all_files) * 1.5)
+                
+            except Exception as e:
+                errors_encountered += 1
+                logger.warning(f"Error fetching files on page {page_count}: {e}")
+                
+                # Handle specific permission errors
+                if "insufficient" in str(e).lower() or "permission" in str(e).lower():
+                    logger.warning(f"Permission denied for some files on page {page_count}")
+                    # Continue with next page if possible
+                    page_token = None
+                    break
+                elif "rate" in str(e).lower() or "quota" in str(e).lower():
+                    logger.warning(f"Rate limit hit, continuing with {len(all_files)} files")
+                    break
+                elif errors_encountered >= 3:
+                    logger.error(f"Too many errors ({errors_encountered}), stopping scan")
+                    break
+                else:
+                    # Try to continue with other pages
+                    page_token = None
+                    break
+        
+        if errors_encountered > 0:
+            logger.warning(f"Scan completed with {errors_encountered} errors. Some files may be missing.")
+        
+        logger.info(f"Fetched {len(all_files)} files in {page_count} API calls")
+        return all_files
+    
+    def _build_complete_structure(self, 
+                                all_files: List[Dict], 
+                                structure: DriveStructure,
+                                progress_callback: Optional[Callable] = None) -> None:
+        """Build complete DriveStructure from all file data.
+        
+        Args:
+            all_files: List of ALL file metadata from API
+            structure: DriveStructure to populate
+            progress_callback: Optional progress callback
+        """
+        logger.info(f"Building complete structure from {len(all_files)} items...")
+        
+        total_files = len(all_files)
+        processed_items = 0
+        error_count = 0
+        
+        if self.config.display.show_progress and not progress_callback:
+            progress = ProgressTracker(total_files, "Converting files")
+        
+        for i, file_data in enumerate(all_files):
+            try:
+                # Validate required fields
+                if not file_data.get('id'):
+                    logger.warning(f"Skipping file without ID: {file_data}")
+                    continue
+                
+                item = DriveItem.from_drive_api(file_data)
+                structure.add_item(item)
+                processed_items += 1
+                
+                if self.config.display.show_progress and not progress_callback:
+                    progress.update()
+                
+                if progress_callback and i % 100 == 0:
+                    # This is structure building phase (30-60%)
+                    build_progress = int(30 + (i / total_files) * 30)
+                    progress_callback(f"Processing {i+1}/{total_files} items...", build_progress, 100)
+                    
+            except PermissionError as e:
+                error_count += 1
+                logger.warning(f"Permission denied for file {file_data.get('id', 'unknown')}: {e}")
+                continue
+            except Exception as e:
+                error_count += 1
+                logger.warning(f"Error processing file {file_data.get('id', 'unknown')}: {e}")
+                # Don't fail completely if we can't process some files
+                if error_count > total_files * 0.1:  # If more than 10% fail, something is seriously wrong
+                    logger.error(f"Too many errors ({error_count}) processing files. Stopping.")
+                    break
+                continue
+        
+        if self.config.display.show_progress and not progress_callback:
+            progress.complete()
+        
+        if error_count > 0:
+            logger.warning(f"Built structure with {processed_items} items ({error_count} errors encountered)")
+        else:
+            logger.info(f"Built structure with {processed_items} items successfully")
+        
+        # Store error statistics
+        structure._processing_errors = error_count
     
     def scan_folder(self, folder_id: str, 
                     max_depth: Optional[int] = None,

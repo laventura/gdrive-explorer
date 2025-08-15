@@ -417,6 +417,9 @@ class DriveCalculator:
             hours_since_scan = (datetime.now() - folder.last_scanned).total_seconds() / 3600
             if hours_since_scan < self.config.cache.ttl_hours:
                 return False
+            else:
+                # Old scan - needs recalculation
+                return True
         
         # Check if any children have been modified since last scan
         if folder.last_scanned:
@@ -425,7 +428,7 @@ class DriveCalculator:
                     logger.debug(f"Recalculating '{folder.name}' - child '{child.name}' was modified")
                     return True
         
-        return False
+        return True  # Default to recalculate if we can't determine freshness
     
     def _update_structure_stats(self, structure: DriveStructure) -> None:
         """Update overall structure statistics."""

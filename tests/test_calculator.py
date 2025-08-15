@@ -68,6 +68,7 @@ class TestSizeCalculation:
             id="folder1",
             name="Test Folder",
             type=ItemType.FOLDER,
+            mime_type="application/vnd.google-apps.folder",
             size=0
         )
         
@@ -75,16 +76,18 @@ class TestSizeCalculation:
             id="file1",
             name="file1.txt",
             type=ItemType.FILE,
+            mime_type="text/plain",
             size=1024,
-            parent_id="folder1"
+            parent_ids=["folder1"]
         )
         
         file2 = DriveItem(
             id="file2", 
             name="file2.txt",
             type=ItemType.FILE,
+            mime_type="text/plain",
             size=2048,
-            parent_id="folder1"
+            parent_ids=["folder1"]
         )
         
         folder.children = [file1, file2]
@@ -107,10 +110,10 @@ class TestSizeCalculation:
     def test_calculate_nested_folder_size(self, mock_calculator):
         """Test calculating size for nested folders."""
         # Create nested structure
-        root = DriveItem(id="root", name="Root", type=ItemType.FOLDER, size=0)
-        subfolder = DriveItem(id="sub", name="Sub", type=ItemType.FOLDER, size=0, parent_id="root")
-        file1 = DriveItem(id="file1", name="f1.txt", type=ItemType.FILE, size=1000, parent_id="root")
-        file2 = DriveItem(id="file2", name="f2.txt", type=ItemType.FILE, size=2000, parent_id="sub")
+        root = DriveItem(id="root", name="Root", type=ItemType.FOLDER, mime_type="application/vnd.google-apps.folder", size=0)
+        subfolder = DriveItem(id="sub", name="Sub", type=ItemType.FOLDER, mime_type="application/vnd.google-apps.folder", size=0, parent_ids=["root"])
+        file1 = DriveItem(id="file1", name="f1.txt", type=ItemType.FILE, mime_type="text/plain", size=1000, parent_ids=["root"])
+        file2 = DriveItem(id="file2", name="f2.txt", type=ItemType.FILE, mime_type="text/plain", size=2000, parent_ids=["sub"])
         
         root.children = [subfolder, file1]
         subfolder.children = [file2]
@@ -129,25 +132,26 @@ class TestSizeCalculation:
     
     def test_calculate_google_workspace_files(self, mock_calculator):
         """Test handling Google Workspace files (zero size)."""
-        folder = DriveItem(id="folder", name="Folder", type=ItemType.FOLDER, size=0)
+        folder = DriveItem(id="folder", name="Folder", type=ItemType.FOLDER, mime_type="application/vnd.google-apps.folder", size=0)
         
         # Regular file
         regular_file = DriveItem(
             id="regular",
             name="document.pdf", 
             type=ItemType.FILE,
+            mime_type="application/pdf",
             size=5000,
-            parent_id="folder"
+            parent_ids=["folder"]
         )
         
         # Google Workspace file
         workspace_file = DriveItem(
             id="workspace",
             name="google_doc",
-            type=ItemType.FILE,
+            type=ItemType.GOOGLE_DOC,
+            mime_type="application/vnd.google-apps.document",
             size=0,
-            parent_id="folder",
-            mime_type="application/vnd.google-apps.document"
+            parent_ids=["folder"]
         )
         
         folder.children = [regular_file, workspace_file]
@@ -184,7 +188,8 @@ class TestSizeCalculation:
     def test_incremental_calculation(self, mock_calculator, sample_drive_structure):
         """Test incremental size calculation."""
         # Mark some folders as needing recalculation
-        folder = list(sample_drive_structure.get_folders())[0]
+        folders = [item for item in sample_drive_structure.all_items.values() if item.is_folder]
+        folder = folders[0]
         folder.last_scanned = datetime.now() - timedelta(days=30)  # Old scan
         
         # Mock _should_recalculate to return True for this folder
@@ -199,25 +204,24 @@ class TestSizeCalculation:
         """Test folder recalculation logic."""
         now = datetime.now()
         
+        # Set TTL to 24 hours
+        mock_calculator.config.cache.ttl_hours = 24
+        
         # Folder with no calculated size
-        folder1 = DriveItem(id="f1", name="F1", type=ItemType.FOLDER, size=0)
+        folder1 = DriveItem(id="f1", name="F1", type=ItemType.FOLDER, mime_type="application/vnd.google-apps.folder", size=0)
         assert mock_calculator._should_recalculate(folder1)
         
         # Recently scanned folder
-        folder2 = DriveItem(id="f2", name="F2", type=ItemType.FOLDER, size=0)
+        folder2 = DriveItem(id="f2", name="F2", type=ItemType.FOLDER, mime_type="application/vnd.google-apps.folder", size=0)
         folder2.calculated_size = 1000
         folder2.last_scanned = now - timedelta(hours=1)
-        
-        with patch.object(mock_calculator.config.cache, 'ttl_hours', 24):
-            assert not mock_calculator._should_recalculate(folder2)
+        assert not mock_calculator._should_recalculate(folder2)
         
         # Old scan
-        folder3 = DriveItem(id="f3", name="F3", type=ItemType.FOLDER, size=0)
+        folder3 = DriveItem(id="f3", name="F3", type=ItemType.FOLDER, mime_type="application/vnd.google-apps.folder", size=0)
         folder3.calculated_size = 1000
         folder3.last_scanned = now - timedelta(days=2)
-        
-        with patch.object(mock_calculator.config.cache, 'ttl_hours', 24):
-            assert mock_calculator._should_recalculate(folder3)
+        assert mock_calculator._should_recalculate(folder3)
 
 
 class TestErrorHandling:
@@ -259,6 +263,7 @@ class TestErrorHandling:
             id="protected",
             name="Protected Folder",
             type=ItemType.FOLDER,
+            mime_type="application/vnd.google-apps.folder",
             size=0
         )
         
@@ -282,7 +287,7 @@ class TestErrorHandling:
     
     def test_rate_limit_retry(self, mock_calculator):
         """Test rate limit error retry logic."""
-        folder = DriveItem(id="rate_limited", name="Folder", type=ItemType.FOLDER, size=0)
+        folder = DriveItem(id="rate_limited", name="Folder", type=ItemType.FOLDER, mime_type="application/vnd.google-apps.folder", size=0)
         structure = DriveStructure()
         structure.add_item(folder)
         
@@ -307,7 +312,7 @@ class TestErrorHandling:
         """Test detection of circular references."""
         # This is a bit artificial since the models should prevent this,
         # but test the safety mechanism
-        folder = DriveItem(id="circular", name="Circular", type=ItemType.FOLDER, size=0)
+        folder = DriveItem(id="circular", name="Circular", type=ItemType.FOLDER, mime_type="application/vnd.google-apps.folder", size=0)
         
         structure = DriveStructure()
         structure.add_item(folder)
@@ -330,6 +335,7 @@ class TestCacheIntegration:
             id="cached_folder",
             name="Cached Folder",
             type=ItemType.FOLDER,
+            mime_type="application/vnd.google-apps.folder",
             size=0
         )
         folder.calculated_size = 5000
@@ -352,13 +358,14 @@ class TestCacheIntegration:
     
     def test_cache_storage_after_calculation(self, mock_calculator):
         """Test that results are cached after calculation."""
-        folder = DriveItem(id="new_folder", name="New", type=ItemType.FOLDER, size=0)
+        folder = DriveItem(id="new_folder", name="New", type=ItemType.FOLDER, mime_type="application/vnd.google-apps.folder", size=0)
         file_item = DriveItem(
             id="file", 
             name="file.txt", 
-            type=ItemType.FILE, 
+            type=ItemType.FILE,
+            mime_type="text/plain", 
             size=1000,
-            parent_id="new_folder"
+            parent_ids=["new_folder"]
         )
         
         folder.children = [file_item]
@@ -384,7 +391,7 @@ class TestAnalysisFunctions:
     def test_find_largest_folders(self, mock_calculator, sample_drive_structure):
         """Test finding largest folders."""
         # Set some calculated sizes
-        folders = sample_drive_structure.get_folders()
+        folders = [item for item in sample_drive_structure.all_items.values() if item.is_folder]
         for i, folder in enumerate(folders):
             folder.calculated_size = (i + 1) * 1000  # 1000, 2000, 3000, 4000
         
@@ -397,7 +404,7 @@ class TestAnalysisFunctions:
     def test_find_empty_folders(self, mock_calculator, sample_drive_structure):
         """Test finding empty folders."""
         # Mark some folders as empty
-        folders = sample_drive_structure.get_folders()
+        folders = [item for item in sample_drive_structure.all_items.values() if item.is_folder]
         if folders:
             empty_folder = folders[0]
             empty_folder.scan_complete = True
@@ -424,6 +431,7 @@ class TestAnalysisFunctions:
                 id=f"folder_{i}",
                 name=f"Folder {i}",
                 type=ItemType.FOLDER,
+                mime_type="application/vnd.google-apps.folder",
                 size=0
             )
             folder.calculated_size = size
@@ -448,6 +456,7 @@ class TestAnalysisFunctions:
             id="regular",
             name="document.pdf",
             type=ItemType.FILE,
+            mime_type="application/pdf",
             size=1000000
         )
         structure.add_item(regular_file)
@@ -461,9 +470,9 @@ class TestAnalysisFunctions:
             workspace_file = DriveItem(
                 id=f"workspace_{i}",
                 name=f"Google File {i}",
-                type=ItemType.FILE,
-                size=0,
-                mime_type=mime_type
+                type=ItemType.GOOGLE_DOC if "document" in mime_type else (ItemType.GOOGLE_SHEET if "spreadsheet" in mime_type else ItemType.GOOGLE_SLIDE),
+                mime_type=mime_type,
+                size=0
             )
             structure.add_item(workspace_file)
         

@@ -187,7 +187,12 @@ class DriveDisplayManager:
             type_text = self._format_item_type(item)
             
             # Size
-            size_text = format_file_size(item.display_size) if item.display_size > 0 else "-"
+            if item.display_size > 0:
+                size_text = format_file_size(item.display_size)
+            elif item.is_google_workspace_file:
+                size_text = "G-Workspace"
+            else:
+                size_text = "-"
             
             # Path (if requested)
             path_text = item.path if show_path else None

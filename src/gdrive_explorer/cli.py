@@ -171,10 +171,14 @@ def clear_auth():
 @click.option('--type', 'item_type', type=click.Choice(['files', 'folders', 'both']), default='both', help='Item type to show')
 @click.option('--cache/--no-cache', default=True, help='Use cached data if available')
 @click.option('--path/--no-path', default=False, help='Show full path in table view')
-def scan(limit, format, sort, min_size, max_size, item_type, cache, path):
+@click.option('--full', is_flag=True, help='Perform complete Drive scan with size calculation (Phase 3)')
+def scan(limit, format, sort, min_size, max_size, item_type, cache, path, full):
     """Scan and analyze Google Drive with rich visualization."""
     try:
-        rprint("[blue]🔍 Scanning Google Drive...[/blue]")
+        if full:
+            rprint("[blue]🔍 Performing complete Google Drive scan with size calculation...[/blue]")
+        else:
+            rprint("[blue]🔍 Scanning Google Drive (quick preview)...[/blue]")
         
         # Initialize display manager
         display = DriveDisplayManager(console)
@@ -189,33 +193,92 @@ def scan(limit, format, sort, min_size, max_size, item_type, cache, path):
         filters.include_files = item_type in ['files', 'both']
         filters.include_folders = item_type in ['folders', 'both']
         
-        # Get data (for now, use basic API call - full scan will be Phase 3)
-        client = DriveClient()
-        
-        # Check cache first
-        if cache:
-            cached_structure = get_cache().get_structure()
-            if cached_structure:
-                rprint("[green]✓ Using cached drive structure[/green]")
-                display.display_summary(cached_structure)
-                return
-        
-        rprint("[blue]Fetching data from Google Drive API...[/blue]")
-        rprint(f"[yellow]Note: Limited preview with {limit * 2} items[/yellow]")
-        
-        # Get sample data
-        result = client.list_files(page_size=min(limit * 2, 1000))
-        files = result.get('files', [])
-        
-        # Convert to DriveItem objects
-        from .models import DriveItem
-        items = []
-        for file_data in files:
-            try:
-                item = DriveItem.from_drive_api(file_data)
-                items.append(item)
-            except Exception as e:
-                continue
+        if full:
+            # Phase 3: Complete Drive scan with size calculation
+            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+            
+            explorer = DriveExplorer()
+            structure = None
+            
+            def progress_callback(message, current, total):
+                # This will be handled by the progress display below
+                pass
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                
+                task = progress.add_task("Scanning Drive...", total=100)
+                
+                def update_progress(message, current, total):
+                    if total > 0:
+                        percentage = (current / total) * 100
+                        progress.update(task, completed=percentage, description=message)
+                
+                # Perform complete scan
+                structure = explorer.scan_drive_complete(
+                    calculate_sizes=True,
+                    use_cache=cache,
+                    progress_callback=update_progress
+                )
+            
+            rprint(f"[green]✅ Complete scan finished![/green]")
+            rprint(f"[blue]Total: {structure.total_files:,} files, {structure.total_folders:,} folders[/blue]")
+            rprint(f"[blue]Total size: {format_file_size(structure.total_size)}[/blue]")
+            
+            # Get items from structure
+            items = list(structure.all_items.values())
+            
+        else:
+            # Quick preview mode
+            client = DriveClient()
+            
+            # Check cache first
+            if cache:
+                cached_structure = get_cache().get_structure()
+                if cached_structure and cached_structure.scan_complete:
+                    rprint("[green]✓ Using cached complete drive structure[/green]")
+                    items = list(cached_structure.all_items.values())
+                else:
+                    # Fall back to quick scan
+                    rprint("[blue]Fetching sample data from Google Drive API...[/blue]")
+                    rprint(f"[yellow]Note: Limited preview with {limit * 2} items. Use --full for complete scan.[/yellow]")
+                    
+                    # Get sample data
+                    result = client.list_files(page_size=min(limit * 2, 1000))
+                    files = result.get('files', [])
+                    
+                    # Convert to DriveItem objects
+                    from .models import DriveItem
+                    items = []
+                    for file_data in files:
+                        try:
+                            item = DriveItem.from_drive_api(file_data)
+                            items.append(item)
+                        except Exception as e:
+                            continue
+            else:
+                rprint("[blue]Fetching sample data from Google Drive API...[/blue]")
+                rprint(f"[yellow]Note: Limited preview with {limit * 2} items. Use --full for complete scan.[/yellow]")
+                
+                # Get sample data
+                result = client.list_files(page_size=min(limit * 2, 1000))
+                files = result.get('files', [])
+                
+                # Convert to DriveItem objects
+                from .models import DriveItem
+                items = []
+                for file_data in files:
+                    try:
+                        item = DriveItem.from_drive_api(file_data)
+                        items.append(item)
+                    except Exception as e:
+                        continue
         
         rprint(f"[green]✓ Loaded {len(items)} items[/green]")
         
@@ -245,18 +308,24 @@ def scan(limit, format, sort, min_size, max_size, item_type, cache, path):
             )
         elif format == 'tree':
             # For tree view, we need folder structure
-            folders = [item for item in filtered_items if item.is_folder]
-            if folders:
-                rprint("[yellow]Tree view with sample folder structure:[/yellow]")
-                # Create a mock structure for demo
-                from .models import DriveStructure
-                structure = DriveStructure()
-                for item in items:
-                    structure.add_item(item)
-                structure.build_hierarchy()
+            if full and 'structure' in locals():
+                # Use complete structure from full scan
                 display.display_tree(structure, max_depth=3, min_size=filters.min_size or 0)
             else:
-                rprint("[yellow]No folders found for tree view[/yellow]")
+                # Create structure from available items
+                folders = [item for item in filtered_items if item.is_folder]
+                if folders or len(filtered_items) > 0:
+                    if not full:
+                        rprint("[yellow]Tree view with sample folder structure (use --full for complete tree):[/yellow]")
+                    # Create structure for demo
+                    from .models import DriveStructure
+                    temp_structure = DriveStructure()
+                    for item in items:
+                        temp_structure.add_item(item)
+                    temp_structure.build_hierarchy()
+                    display.display_tree(temp_structure, max_depth=3, min_size=filters.min_size or 0)
+                else:
+                    rprint("[yellow]No folders found for tree view[/yellow]")
         
         # Show summary stats
         total_size = sum(item.display_size for item in filtered_items)
@@ -287,6 +356,10 @@ def cache():
         
         table.add_row("Cached Items", str(stats.get('items_count', 0)))
         table.add_row("Cached Structures", str(stats.get('structures_count', 0)))
+        table.add_row("Complete Scans", str(stats.get('complete_scans', 0)))
+        table.add_row("Max Files Scanned", f"{stats.get('max_files_scanned', 0):,}")
+        table.add_row("Max Folders Scanned", f"{stats.get('max_folders_scanned', 0):,}")
+        table.add_row("Total Scan Errors", str(stats.get('total_scan_errors', 0)))
         table.add_row("Total Size", f"{stats.get('total_size_mb', 0):.2f} MB")
         table.add_row("Database Size", f"{stats.get('database_size_mb', 0):.2f} MB")
         table.add_row("Expired Entries", str(stats.get('expired_count', 0)))
@@ -321,6 +394,115 @@ def cache_clear(expired_only):
         rprint(f"[red]Error clearing cache: {e}[/red]")
 
 
+@main.command('full-scan')
+@click.option('--cache/--no-cache', default=True, help='Use cached data if available')
+@click.option('--force', '-f', is_flag=True, help='Force complete rescan even if cache exists')
+def full_scan(cache, force):
+    """Perform a complete Google Drive scan with size calculation (Phase 3)."""
+    try:
+        rprint("[blue]🚀 Starting complete Google Drive analysis...[/blue]")
+        
+        if force:
+            cache = False
+            rprint("[yellow]⚡ Forcing complete rescan (ignoring cache)[/yellow]")
+        
+        # Initialize components
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+        explorer = DriveExplorer()
+        display = DriveDisplayManager(console)
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            
+            task = progress.add_task("Initializing scan...", total=100)
+            
+            def update_progress(message, current, total):
+                if total > 0:
+                    percentage = (current / total) * 100
+                    progress.update(task, completed=percentage, description=message)
+            
+            # Perform complete scan with size calculation
+            structure = explorer.scan_drive_complete(
+                calculate_sizes=True,
+                use_cache=cache,
+                progress_callback=update_progress
+            )
+        
+        rprint(f"[green]✅ Complete analysis finished![/green]")
+        
+        # Display comprehensive summary
+        display.display_summary(structure)
+        
+        # Analyze Google Workspace files
+        workspace_analysis = explorer.calculator.analyze_google_workspace_files(structure)
+        if workspace_analysis['total_workspace_files'] > 0:
+            rprint(f"\n[bold cyan]📄 Google Workspace Files Analysis:[/bold cyan]")
+            rprint(f"[green]Total Workspace Files:[/green] {workspace_analysis['total_workspace_files']:,}")
+            rprint(f"[green]Percentage of Files:[/green] {workspace_analysis['percentage_of_total_files']:.1f}%")
+            rprint(f"[green]Most Common Type:[/green] {workspace_analysis['most_common_type'] or 'N/A'}")
+            
+            if workspace_analysis['workspace_types']:
+                rprint("[dim]Types breakdown:[/dim]")
+                for file_type, data in workspace_analysis['workspace_types'].items():
+                    rprint(f"  • {file_type.replace('google_', '').title()}: {data['count']:,} files")
+        
+        # Show largest folders with calculated sizes
+        if structure.total_folders > 0:
+            rprint("\n[bold cyan]📁 Largest Folders (by calculated size):[/bold cyan]")
+            largest_folders = explorer.find_largest_folders(structure, limit=10)
+            if largest_folders:
+                display.display_table(
+                    largest_folders,
+                    title="🔥 Top 10 Largest Folders",
+                    sort_by=SortBy.SIZE,
+                    limit=10
+                )
+            else:
+                rprint("[yellow]No folders with calculated sizes found[/yellow]")
+        
+        # Show largest files
+        rprint("\n[bold cyan]📄 Largest Files:[/bold cyan]")
+        largest_files = explorer.find_largest_files(structure, limit=10)
+        if largest_files:
+            display.display_table(
+                largest_files,
+                title="🔥 Top 10 Largest Files",
+                sort_by=SortBy.SIZE,
+                limit=10
+            )
+        
+        rprint(f"\n[green]✨ Analysis complete! Use other commands to explore your {structure.total_files:,} files and {structure.total_folders:,} folders.[/green]")
+        rprint("[dim]💡 Try: gdrive-explorer scan --full --format tree[/dim]")
+        
+    except PermissionError as e:
+        rprint(f"[red]Permission Error: {e}[/red]")
+        rprint("[yellow]💡 This might be due to:[/yellow]")
+        rprint("   • Insufficient Google Drive API permissions")
+        rprint("   • Files shared from other accounts that you can't access")
+        rprint("   • Try re-authenticating: gdrive-explorer auth --force")
+    except Exception as e:
+        rprint(f"[red]Error during full scan: {e}[/red]")
+        
+        # Provide helpful suggestions based on error type
+        error_str = str(e).lower()
+        if "quota" in error_str or "rate" in error_str:
+            rprint("[yellow]💡 Google Drive API quota exceeded. Try again later.[/yellow]")
+        elif "permission" in error_str or "insufficient" in error_str:
+            rprint("[yellow]💡 Try re-authenticating: gdrive-explorer auth --force[/yellow]")
+        elif "network" in error_str or "connection" in error_str:
+            rprint("[yellow]💡 Network issues detected. Check your internet connection.[/yellow]")
+        
+        import traceback
+        if click.get_current_context().find_root().params.get('verbose'):
+            rprint(f"[red]{traceback.format_exc()}[/red]")
+
+
 @main.command()
 @click.option('--limit', '-l', default=20, help='Number of largest items to show')
 @click.option('--type', 'item_type', type=click.Choice(['files', 'folders', 'both']), default='both', help='Show files, folders, or both')
@@ -329,10 +511,52 @@ def largest(limit, item_type):
     try:
         rprint("[blue]🔍 Finding largest items...[/blue]")
         
-        client = DriveClient()
         display = DriveDisplayManager(console)
         
-        # Get data
+        # Check for complete cached structure first
+        cached_structure = get_cache().get_structure()
+        if cached_structure and cached_structure.scan_complete:
+            rprint("[green]✓ Using complete cached Drive structure[/green]")
+            
+            explorer = DriveExplorer()
+            
+            # Show files
+            if item_type in ['files', 'both']:
+                large_files = explorer.find_largest_files(cached_structure, limit=limit)
+                if large_files:
+                    display.display_table(
+                        large_files,
+                        title=f"🔥 Largest Files (Top {len(large_files)})",
+                        sort_by=SortBy.SIZE
+                    )
+                else:
+                    rprint("[yellow]No large files found[/yellow]")
+            
+            # Show folders with calculated sizes
+            if item_type in ['folders', 'both']:
+                if item_type == 'both':
+                    rprint()
+                
+                large_folders = explorer.find_largest_folders(cached_structure, limit=limit)
+                if large_folders:
+                    rprint("[green]📁 Folders with calculated sizes:[/green]")
+                    display.display_table(
+                        large_folders,
+                        title=f"🔥 Largest Folders (Top {len(large_folders)})",
+                        sort_by=SortBy.SIZE
+                    )
+                else:
+                    rprint("[yellow]No folders with calculated sizes found[/yellow]")
+            
+            return
+        
+        # Fall back to sample data
+        rprint("[yellow]No complete scan available. Showing sample data.[/yellow]")
+        rprint("[dim]💡 Run 'gdrive-explorer full-scan' for complete analysis with folder sizes.[/dim]")
+        
+        client = DriveClient()
+        
+        # Get sample data
         result = client.list_files(page_size=1000)
         files = result.get('files', [])
         
@@ -355,7 +579,7 @@ def largest(limit, item_type):
             large_files.sort(key=lambda x: x.size, reverse=True)
             display.display_table(
                 large_files[:limit],
-                title=f"🔥 Largest Files (Top {min(limit, len(large_files))})",
+                title=f"🔥 Largest Files (Top {min(limit, len(large_files))} - Sample)",
                 sort_by=SortBy.SIZE
             )
         
@@ -364,10 +588,10 @@ def largest(limit, item_type):
             if item_type == 'both':
                 rprint()
             
-            rprint("[yellow]📁 Folders (sizes not calculated without full scan):[/yellow]")
+            rprint("[yellow]📁 Folders (sizes not calculated - sample data):[/yellow]")
             display.display_table(
                 large_folders[:limit],
-                title=f"📁 Recent Folders (Top {min(limit, len(large_folders))})",
+                title=f"📁 Recent Folders (Top {min(limit, len(large_folders))} - Sample)",
                 sort_by=SortBy.MODIFIED
             )
         
@@ -425,15 +649,24 @@ def summary():
     try:
         rprint("[blue]📊 Analyzing Google Drive...[/blue]")
         
-        client = DriveClient()
         display = DriveDisplayManager(console)
         
-        # Check for cached structure first
+        # Check for complete cached structure first
         cached_structure = get_cache().get_structure()
-        if cached_structure:
-            rprint("[green]✓ Using cached data[/green]")
+        if cached_structure and cached_structure.scan_complete:
+            rprint("[green]✓ Using complete cached Drive structure[/green]")
             display.display_summary(cached_structure)
             return
+        elif cached_structure:
+            rprint("[green]✓ Using partial cached data[/green]")
+            display.display_summary(cached_structure)
+            return
+        
+        # Fall back to sample data
+        rprint("[yellow]No cached data available. Generating sample summary.[/yellow]")
+        rprint("[dim]💡 Run 'gdrive-explorer full-scan' for complete analysis.[/dim]")
+        
+        client = DriveClient()
         
         # Get sample data for basic summary
         result = client.list_files(page_size=1000)
@@ -452,14 +685,14 @@ def summary():
         summary_text = f"""
 [bold cyan]📊 Google Drive Summary (Sample)[/bold cyan]
 
-[bold]Total Items:[/bold] {total_items:,} (sample)
+[bold]Total Items:[/bold] {total_items:,} (sample of your Drive)
 [bold]Files:[/bold] {len(regular_files):,}
 [bold]Folders:[/bold] {len(folders):,}
-[bold]Total Size:[/bold] {format_file_size(total_size)}
+[bold]Total Size:[/bold] {format_file_size(total_size)} (files only)
 [bold]Google Workspace Files:[/bold] {len(workspace_files):,}
 
-[bold yellow]Note:[/bold yellow] This is a sample analysis. For complete analysis, 
-run full scan after setting up authentication.
+[bold yellow]Note:[/bold yellow] This is a sample analysis from recent files. 
+For complete Drive analysis with folder sizes, run: [bold]gdrive-explorer full-scan[/bold]
         """
         
         from rich.panel import Panel

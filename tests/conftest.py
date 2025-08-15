@@ -45,36 +45,40 @@ def sample_files():
             'id': 'file1',
             'name': 'document.pdf',
             'type': ItemType.FILE,
+            'mime_type': 'application/pdf',
             'size': 1024 * 1024,  # 1MB
             'modified_time': now - timedelta(days=1),
-            'parent_id': 'folder1',
+            'parent_ids': ['folder1'],
             'is_google_workspace_file': False
         },
         {
             'id': 'file2', 
             'name': 'spreadsheet.xlsx',
             'type': ItemType.FILE,
+            'mime_type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'size': 512 * 1024,  # 512KB
             'modified_time': now - timedelta(hours=12),
-            'parent_id': 'folder1',
+            'parent_ids': ['folder1'],
             'is_google_workspace_file': False
         },
         {
             'id': 'file3',
             'name': 'google_doc',
-            'type': ItemType.FILE,
+            'type': ItemType.GOOGLE_DOC,
+            'mime_type': 'application/vnd.google-apps.document',
             'size': 0,  # Google Workspace file
             'modified_time': now - timedelta(hours=6),
-            'parent_id': 'folder2',
+            'parent_ids': ['folder2'],
             'is_google_workspace_file': True
         },
         {
             'id': 'file4',
             'name': 'image.jpg',
             'type': ItemType.FILE,
+            'mime_type': 'image/jpeg',
             'size': 2 * 1024 * 1024,  # 2MB
             'modified_time': now - timedelta(hours=3),
-            'parent_id': 'folder2',
+            'parent_ids': ['folder2'],
             'is_google_workspace_file': False
         }
     ]
@@ -89,36 +93,40 @@ def sample_folders():
             'id': 'root',
             'name': 'My Drive',
             'type': ItemType.FOLDER,
+            'mime_type': 'application/vnd.google-apps.folder',
             'size': 0,
             'modified_time': now - timedelta(days=7),
-            'parent_id': None,
+            'parent_ids': [],
             'is_google_workspace_file': False
         },
         {
             'id': 'folder1',
             'name': 'Documents',
             'type': ItemType.FOLDER,
+            'mime_type': 'application/vnd.google-apps.folder',
             'size': 0,
             'modified_time': now - timedelta(days=2),
-            'parent_id': 'root',
+            'parent_ids': ['root'],
             'is_google_workspace_file': False
         },
         {
             'id': 'folder2',
             'name': 'Photos',
             'type': ItemType.FOLDER,
+            'mime_type': 'application/vnd.google-apps.folder',
             'size': 0,
             'modified_time': now - timedelta(days=1),
-            'parent_id': 'root',
+            'parent_ids': ['root'],
             'is_google_workspace_file': False
         },
         {
             'id': 'folder3',
             'name': 'Projects',
             'type': ItemType.FOLDER,
+            'mime_type': 'application/vnd.google-apps.folder',
             'size': 0,
             'modified_time': now - timedelta(hours=8),
-            'parent_id': 'folder1',
+            'parent_ids': ['folder1'],
             'is_google_workspace_file': False
         }
     ]
@@ -139,9 +147,11 @@ def sample_drive_items(sample_files, sample_folders):
     
     # Build parent-child relationships
     for item in items.values():
-        if item.parent_id and item.parent_id in items:
-            parent = items[item.parent_id]
-            parent.children.append(item)
+        if item.parent_ids:
+            for parent_id in item.parent_ids:
+                if parent_id in items:
+                    parent = items[parent_id]
+                    parent.children.append(item)
     
     return items
 
@@ -154,10 +164,6 @@ def sample_drive_structure(sample_drive_items):
     for item in sample_drive_items.values():
         structure.add_item(item)
     
-    # Set root
-    structure.root = sample_drive_items['root']
-    structure.total_files = 4
-    structure.total_folders = 4
     structure.scan_complete = True
     structure.scan_timestamp = datetime.now()
     
@@ -167,7 +173,7 @@ def sample_drive_structure(sample_drive_items):
 @pytest.fixture
 def mock_drive_client():
     """Create a mock DriveClient for testing."""
-    client = Mock(spec=DriveClient)
+    client = Mock()
     client.is_authenticated = True
     client.get_user_info.return_value = {
         'user': {'displayName': 'Test User', 'emailAddress': 'test@example.com'},
@@ -188,10 +194,21 @@ def mock_cache(temp_dir):
 
 
 @pytest.fixture
-def mock_calculator(mock_drive_client, mock_cache):
+def mock_calculator(mock_drive_client):
     """Create a calculator with mocked dependencies."""
     calc = DriveCalculator(mock_drive_client)
-    calc.cache = mock_cache
+    # Replace with a mock cache for testing
+    calc.cache = Mock()
+    calc.cache.get_item.return_value = None
+    calc.cache.cache_item.return_value = True
+    calc.cache.cache_structure.return_value = True
+    calc.cache.invalidate_item.return_value = True
+    
+    # Mock config with cache settings
+    calc.config = Mock()
+    calc.config.cache.ttl_hours = 24
+    calc.config.cache.enabled = True
+    
     return calc
 
 
@@ -206,12 +223,12 @@ def large_drive_structure():
         id='root',
         name='My Drive',
         type=ItemType.FOLDER,
+        mime_type='application/vnd.google-apps.folder',
         size=0,
         modified_time=now - timedelta(days=30),
-        parent_id=None
+        parent_ids=[]
     )
     structure.add_item(root)
-    structure.root = root
     
     # Create 100 folders and 1000 files
     for i in range(100):
@@ -219,9 +236,10 @@ def large_drive_structure():
             id=f'folder_{i}',
             name=f'Folder {i}',
             type=ItemType.FOLDER,
+            mime_type='application/vnd.google-apps.folder',
             size=0,
             modified_time=now - timedelta(days=i % 30),
-            parent_id='root'
+            parent_ids=['root']
         )
         structure.add_item(folder)
         root.children.append(folder)
@@ -232,9 +250,10 @@ def large_drive_structure():
                 id=f'file_{i}_{j}',
                 name=f'file_{i}_{j}.txt',
                 type=ItemType.FILE,
+                mime_type='text/plain',
                 size=(i + j + 1) * 1024,  # Variable sizes
                 modified_time=now - timedelta(hours=i + j),
-                parent_id=folder.id
+                parent_ids=[folder.id]
             )
             structure.add_item(file_item)
             folder.children.append(file_item)

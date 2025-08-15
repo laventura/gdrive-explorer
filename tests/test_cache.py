@@ -11,16 +11,17 @@ from src.gdrive_explorer.cache import DriveCache
 from src.gdrive_explorer.models import DriveItem, DriveStructure, ItemType
 
 
+@pytest.fixture
+def temp_cache(temp_dir):
+    """Create a temporary cache for testing."""
+    cache_path = temp_dir / "test_cache.db"
+    cache = DriveCache(str(cache_path))
+    yield cache
+    # Cleanup is handled by temp_dir fixture
+
+
 class TestDriveCache:
     """Test DriveCache functionality."""
-    
-    @pytest.fixture
-    def temp_cache(self, temp_dir):
-        """Create a temporary cache for testing."""
-        cache_path = temp_dir / "test_cache.db"
-        cache = DriveCache(str(cache_path))
-        yield cache
-        # Cleanup is handled by temp_dir fixture
     
     def test_cache_initialization(self, temp_cache):
         """Test cache initialization and database creation."""
@@ -35,6 +36,7 @@ class TestDriveCache:
             id="test123",
             name="test_file.txt",
             type=ItemType.FILE,
+            mime_type="text/plain",
             size=1024,
             modified_time=datetime.now()
         )
@@ -64,6 +66,7 @@ class TestDriveCache:
                 id="expire_test",
                 name="expire.txt", 
                 type=ItemType.FILE,
+                mime_type="text/plain",
                 size=100
             )
             
@@ -101,6 +104,7 @@ class TestDriveCache:
             id="invalidate_test",
             name="test.txt",
             type=ItemType.FILE,
+            mime_type="text/plain",
             size=100
         )
         
@@ -118,8 +122,8 @@ class TestDriveCache:
     def test_cache_clear_expired(self, temp_cache):
         """Test clearing expired entries."""
         # Create items with different expiry times
-        item1 = DriveItem(id="item1", name="file1.txt", type=ItemType.FILE, size=100)
-        item2 = DriveItem(id="item2", name="file2.txt", type=ItemType.FILE, size=200)
+        item1 = DriveItem(id="item1", name="file1.txt", type=ItemType.FILE, mime_type="text/plain", size=100)
+        item2 = DriveItem(id="item2", name="file2.txt", type=ItemType.FILE, mime_type="text/plain", size=200)
         
         temp_cache.cache_item(item1)
         temp_cache.cache_item(item2)
@@ -136,8 +140,8 @@ class TestDriveCache:
     def test_cache_clear_all(self, temp_cache):
         """Test clearing all cache data."""
         # Add some items
-        item1 = DriveItem(id="clear1", name="file1.txt", type=ItemType.FILE, size=100)
-        item2 = DriveItem(id="clear2", name="file2.txt", type=ItemType.FILE, size=200)
+        item1 = DriveItem(id="clear1", name="file1.txt", type=ItemType.FILE, mime_type="text/plain", size=100)
+        item2 = DriveItem(id="clear2", name="file2.txt", type=ItemType.FILE, mime_type="text/plain", size=200)
         
         temp_cache.cache_item(item1)
         temp_cache.cache_item(item2)
@@ -164,7 +168,7 @@ class TestDriveCache:
         assert 'total_size_bytes' in stats
         
         # Add some items
-        item = DriveItem(id="stats_test", name="test.txt", type=ItemType.FILE, size=100)
+        item = DriveItem(id="stats_test", name="test.txt", type=ItemType.FILE, mime_type="text/plain", size=100)
         temp_cache.cache_item(item)
         
         # Get updated stats
@@ -185,7 +189,7 @@ class TestDriveCache:
             disabled_cache = DriveCache()
             
             # Cache operations should return False/None
-            item = DriveItem(id="disabled", name="test.txt", type=ItemType.FILE, size=100)
+            item = DriveItem(id="disabled", name="test.txt", type=ItemType.FILE, mime_type="text/plain", size=100)
             
             assert not disabled_cache.cache_item(item)
             assert disabled_cache.get_item("disabled") is None
@@ -206,7 +210,7 @@ class TestDriveCache:
         cache2 = DriveCache(str(cache_path))
         
         # Should work without migration errors
-        item = DriveItem(id="migration_test", name="test.txt", type=ItemType.FILE, size=100)
+        item = DriveItem(id="migration_test", name="test.txt", type=ItemType.FILE, mime_type="text/plain", size=100)
         assert cache2.cache_item(item)
         assert cache2.get_item("migration_test") is not None
     
@@ -217,6 +221,7 @@ class TestDriveCache:
             id="large_folder",
             name="Large Folder",
             type=ItemType.FOLDER,
+            mime_type="application/vnd.google-apps.folder",
             size=0
         )
         
@@ -226,8 +231,9 @@ class TestDriveCache:
                 id=f"child_{i}",
                 name=f"file_{i}.txt",
                 type=ItemType.FILE,
+                mime_type="text/plain",
                 size=i * 1024,
-                parent_id="large_folder"
+                parent_ids=["large_folder"]
             )
             root_folder.children.append(child)
         
@@ -255,6 +261,7 @@ class TestDriveCache:
                         id=f"worker_{worker_id}_item_{i}",
                         name=f"file_{worker_id}_{i}.txt",
                         type=ItemType.FILE,
+                        mime_type="text/plain",
                         size=i * 100
                     )
                     
@@ -300,6 +307,7 @@ class TestCacheOptimization:
             id="large_item",
             name="large_file.txt", 
             type=ItemType.FILE,
+            mime_type="text/plain",
             size=10 * 1024 * 1024  # 10MB
         )
         
@@ -319,6 +327,7 @@ class TestCacheOptimization:
                 id=f"opt_test_{i}",
                 name=f"file_{i}.txt",
                 type=ItemType.FILE,
+                mime_type="text/plain",
                 size=i * 1024
             )
             temp_cache.cache_item(item)
@@ -338,7 +347,7 @@ class TestCacheErrorHandling:
     def test_corrupted_data_handling(self, temp_cache):
         """Test handling of corrupted cache data."""
         # This would be complex to test thoroughly, but we can test basic error recovery
-        item = DriveItem(id="error_test", name="test.txt", type=ItemType.FILE, size=100)
+        item = DriveItem(id="error_test", name="test.txt", type=ItemType.FILE, mime_type="text/plain", size=100)
         
         # Cache normally
         success = temp_cache.cache_item(item)
@@ -367,7 +376,7 @@ class TestCacheErrorHandling:
         # This is difficult to test directly, but we ensure the context manager
         # properly handles database connections
         
-        item = DriveItem(id="lock_test", name="test.txt", type=ItemType.FILE, size=100)
+        item = DriveItem(id="lock_test", name="test.txt", type=ItemType.FILE, mime_type="text/plain", size=100)
         
         # Multiple rapid operations should not cause lock issues
         for i in range(5):

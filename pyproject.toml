@@ -87,3 +87,10 @@ module = [
     "google.auth.*"
 ]
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.2",
+    "pytest-cov>=6.2.1",
+    "pytest-mock>=3.14.1",
+]
